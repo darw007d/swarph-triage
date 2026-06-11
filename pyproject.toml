@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swarph-triage"
+version = "0.1.0a0"
+description = "Generalizable ranked-queue triage primitive (fingerprint + priority + state machine + regression detector). Backend-agnostic via SQLAlchemy Core (sqlite + postgres)."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+  { name = "Pierre Samson" },
+  { name = "Claude" },
+]
+requires-python = ">=3.9"
+keywords = ["triage", "queue", "priority", "state-machine", "swarph"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Database",
+  "Topic :: Software Development :: Libraries",
+  "Development Status :: 3 - Alpha",
+]
+dependencies = [
+  "sqlalchemy>=2.0",
+]
+
+[project.optional-dependencies]
+fastapi = [
+  "fastapi>=0.110",
+  "sse-starlette>=2.0",
+]
+dev = [
+  "pytest>=7.0",
+  "pytest-asyncio>=0.21",
+]
+
+[project.scripts]
+swarph-triage = "swarph_triage.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/darw007d/swarph-triage"
+Issues = "https://github.com/darw007d/swarph-triage/issues"
+
+[tool.setuptools.packages.find]
+include = ["swarph_triage*"]
