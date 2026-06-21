@@ -448,17 +448,50 @@ class TriageQueue:
         return [dict(r) for r in rows]
 
     # ─── maintenance ───────────────────────────────────────────────────────
-    def recompute_priorities(self) -> int:
-        """Stub — re-score every non-terminal row. Returns rows updated."""
-        raise NotImplementedError("queue.recompute_priorities — implementation in flight")
+    def recompute_priorities(self, *, now_ts: float | None = None) -> int:
+        """Re-score every non-terminal row. Returns rows updated."""
+        from swarph_triage.priority import recompute_all
 
-    def prune_occurrences(self, *, older_than_days: int = 30) -> int:
-        """Stub — delete occurrences older than N days. Returns rows pruned."""
-        raise NotImplementedError("queue.prune_occurrences — implementation in flight")
+        return recompute_all(self, now_ts=now_ts)
 
-    def backlog_md(self) -> str:
-        """Stub — render the queue as a markdown snapshot string."""
-        raise NotImplementedError("queue.backlog_md — implementation in flight")
+    def prune_occurrences(
+        self,
+        *,
+        older_than_days: int = 30,
+        now: datetime | None = None,
+    ) -> int:
+        """Delete occurrences older than N days. Returns rows pruned."""
+        from sqlalchemy import delete
+
+        from swarph_triage.schema import occurrences
+
+        cutoff = _coerce_now(now) - timedelta(days=older_than_days)
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                delete(occurrences).where(occurrences.c.occurred_at < cutoff)
+            )
+        return result.rowcount or 0
+
+    def backlog_md(self, *, limit: int = 20) -> str:
+        """Render the top of the queue as a deterministic markdown snapshot."""
+        rows = self.list(limit=limit)
+        s = self.stats()
+        lines = [
+            "# swarph-triage backlog",
+            "",
+            f"Total: {s['total']}  |  by status: {s['by_status']}"
+            f"  |  regressions: {s['regression_count']}",
+            "",
+            "| ID | Priority | Status | Severity | Count24h | Fingerprint |",
+            "|---:|---------:|--------|----------|---------:|-------------|",
+        ]
+        for r in rows:
+            fp = str(r.get("fingerprint", ""))
+            lines.append(
+                f"| {r['id']} | {r['priority_score']:.2f} | {r['status']} | "
+                f"{r['severity']} | {r['count_24h']} | {fp} |"
+            )
+        return "\n".join(lines)
 
 
 def open(
