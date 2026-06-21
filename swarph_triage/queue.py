@@ -350,20 +350,102 @@ class TriageQueue:
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict]:
-        """Stub — return rows ordered by priority_score desc. Filter by status."""
-        raise NotImplementedError("queue.list — implementation in flight")
+        """Return rows ordered by ``priority_score`` desc. Filter by status."""
+        from sqlalchemy import select
+
+        from swarph_triage.schema import fingerprints
+
+        stmt = select(fingerprints)
+        if status is not None:
+            stmt = stmt.where(fingerprints.c.status == status)
+        stmt = stmt.order_by(
+            fingerprints.c.priority_score.desc(),
+            fingerprints.c.last_seen.desc(),
+        ).limit(limit).offset(offset)
+        with self.engine.begin() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [dict(r) for r in rows]
 
     def show(self, fingerprint_id: int, *, include_history: bool = True) -> dict:
-        """Stub — full row + recent occurrences + state_log entries."""
-        raise NotImplementedError("queue.show — implementation in flight")
+        """Full row + recent occurrences + (optionally) state_log entries.
+
+        Returns an empty dict if the fingerprint does not exist.
+        """
+        from sqlalchemy import select
+
+        from swarph_triage.schema import fingerprints, occurrences
+
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                select(fingerprints).where(fingerprints.c.id == fingerprint_id)
+            ).mappings().one_or_none()
+            if row is None:
+                return {}
+            out = dict(row)
+            occ = conn.execute(
+                select(occurrences)
+                .where(occurrences.c.fingerprint_id == fingerprint_id)
+                .order_by(occurrences.c.occurred_at.desc())
+                .limit(50)
+            ).mappings().all()
+            out["occurrences"] = [dict(o) for o in occ]
+        out["history"] = self.history(fingerprint_id) if include_history else []
+        return out
 
     def stats(self) -> dict[str, Any]:
-        """Stub — counts per status, regression count, oldest-new age, etc."""
-        raise NotImplementedError("queue.stats — implementation in flight")
+        """Counts per status, regression count, total, oldest-``new`` age."""
+        from sqlalchemy import select, func
+
+        from swarph_triage.schema import fingerprints
+
+        with self.engine.begin() as conn:
+            by_status: dict[str, int] = {}
+            total = 0
+            for r in conn.execute(
+                select(fingerprints.c.status, func.count())
+                .group_by(fingerprints.c.status)
+            ):
+                by_status[r[0]] = r[1]
+                total += r[1]
+
+            regression_count = conn.execute(
+                select(func.count()).select_from(fingerprints)
+                .where(fingerprints.c.regression == 1)
+            ).scalar() or 0
+
+            oldest_new = conn.execute(
+                select(func.min(fingerprints.c.first_seen))
+                .where(fingerprints.c.status == "new")
+            ).scalar()
+
+        oldest_age_hours: float | None = None
+        if oldest_new is not None:
+            from swarph_triage.priority import _to_epoch
+            ts = _to_epoch(oldest_new)
+            if ts is not None:
+                now_ts = datetime.now(timezone.utc).timestamp()
+                oldest_age_hours = max(0.0, (now_ts - ts) / 3600.0)
+
+        return {
+            "by_status": by_status,
+            "total": total,
+            "regression_count": regression_count,
+            "oldest_new_age_hours": oldest_age_hours,
+        }
 
     def history(self, fingerprint_id: int) -> list[dict]:
-        """Stub — full state_log for a fingerprint, oldest-first."""
-        raise NotImplementedError("queue.history — implementation in flight")
+        """Full state_log for a fingerprint, oldest-first."""
+        from sqlalchemy import select
+
+        from swarph_triage.schema import state_log
+
+        with self.engine.begin() as conn:
+            rows = conn.execute(
+                select(state_log)
+                .where(state_log.c.fingerprint_id == fingerprint_id)
+                .order_by(state_log.c.transitioned_at.asc(), state_log.c.id.asc())
+            ).mappings().all()
+        return [dict(r) for r in rows]
 
     # ─── maintenance ───────────────────────────────────────────────────────
     def recompute_priorities(self) -> int:
