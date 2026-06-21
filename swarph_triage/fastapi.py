@@ -1,30 +1,50 @@
 """FastAPI APIRouter factory — JSON only, no HTML.
 
 Templates / HTMX surface stays consumer-side; this module exposes the data
-endpoints + SSE stream the consumer's UI binds against.
+endpoints the consumer's UI binds against.
 
 Optional install: ``pip install swarph-triage[fastapi]``
 """
 
 from __future__ import annotations
 
-from typing import Any  # noqa: F401  — used by future signature additions
+from typing import Any, Optional
 
 
 def build_router(queue) -> Any:
-    """Stub — return a FastAPI APIRouter mountable into the consumer's app.
+    """Return a FastAPI ``APIRouter`` mountable into the consumer's app.
 
-    Routes (planned):
+    Routes:
 
         GET  /list?status=...&limit=...&offset=...
         GET  /stats
         GET  /show/{fp_id}
-        POST /{fp_id}/approve
-        POST /{fp_id}/wontfix
-        POST /{fp_id}/escalate
-        POST /{fp_id}/reopen
-        GET  /events  (SSE — polls state_log, emits transitions)
+        POST /transition/{fp_id}   body: {to_status, actor, note?}
     """
-    raise NotImplementedError(
-        "fastapi.build_router — implementation lands with the routes commit"
-    )
+    from fastapi import APIRouter, Body
+
+    router = APIRouter()
+
+    @router.get("/list")
+    def list_rows(status: Optional[str] = None, limit: int = 50, offset: int = 0):
+        return queue.list(status=status, limit=limit, offset=offset)
+
+    @router.get("/stats")
+    def stats():
+        return queue.stats()
+
+    @router.get("/show/{fp_id}")
+    def show(fp_id: int):
+        return queue.show(fp_id)
+
+    @router.post("/transition/{fp_id}")
+    def transition(fp_id: int, body: dict = Body(...)):
+        ok = queue.transition(
+            fp_id,
+            to_status=body["to_status"],
+            actor=body.get("actor", "api"),
+            note=body.get("note", ""),
+        )
+        return {"ok": ok}
+
+    return router
