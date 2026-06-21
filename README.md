@@ -2,7 +2,7 @@
 
 > Generalizable ranked-queue triage primitive — fingerprint, priority, state machine, regression detector. Backend-agnostic via SQLAlchemy Core (sqlite + postgres).
 
-**Status:** 🚧 0.1.0-alpha skeleton — contract is defined, implementation is in flight. **Not yet pip-installable as functional.** Skeleton committed so consumers can pre-read the public API surface and start consuming planning.
+**Status:** ✅ 0.1.0 — functional. Public API, priority formula, state machine, regression detector, CLI, and FastAPI router are implemented and tested (sqlite + postgres via SQLAlchemy Core).
 
 Extracted from a production **error-triage** system (scan logs → fingerprint → prioritize → work the backlog down) and generalized: the same ranked-dedup-queue pattern fits any high-volume stream of observations that should collapse into prioritized, dispositionable rows.
 
