@@ -93,7 +93,7 @@ def test_cli_backlog(tmp_path, capsys):
     rc = main(["--db-url", db, "backlog"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "A|x|1" in out
+    assert "A\\|x\\|1" in out  # fingerprint pipes escaped in the markdown table
 
 
 def test_cli_db_url_from_env(tmp_path, capsys, monkeypatch):

@@ -67,13 +67,20 @@ def test_backlog_md_renders_table(tmp_path):
     # markdown table header + separator row
     assert "|" in md
     assert "---" in md
-    # both fingerprints present
-    assert "BIG|x|1" in md
-    assert "SMALL|y|2" in md
+    # both fingerprints present, with their pipes ESCAPED so the table can't shatter
+    assert "BIG\\|x\\|1" in md
+    assert "SMALL\\|y\\|2" in md
+    assert "BIG|x|1" not in md  # raw (unescaped) form must NOT appear
+    # table integrity: every data row has exactly 6 columns (7 unescaped pipes)
+    data_rows = [ln for ln in md.splitlines()
+                 if ln.startswith("| ") and "---" not in ln and "ID" not in ln]
+    for ln in data_rows:
+        unescaped_pipes = ln.replace("\\|", "").count("|")
+        assert unescaped_pipes == 7, f"row shattered the table: {ln!r}"
     # deterministic: same call twice -> identical string
     assert md == q.backlog_md()
     # higher-priority row sorts above lower
-    assert md.index("BIG|x|1") < md.index("SMALL|y|2")
+    assert md.index("BIG\\|x\\|1") < md.index("SMALL\\|y\\|2")
 
 
 def test_backlog_md_empty_queue(tmp_path):

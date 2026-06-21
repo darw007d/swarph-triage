@@ -486,7 +486,9 @@ class TriageQueue:
             "|---:|---------:|--------|----------|---------:|-------------|",
         ]
         for r in rows:
-            fp = str(r.get("fingerprint", ""))
+            # Fingerprints commonly contain '|' (e.g. "NullPointerError|auth.py|login").
+            # Escape it (and any newline) so a cell can't shatter the markdown table.
+            fp = str(r.get("fingerprint", "")).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
             lines.append(
                 f"| {r['id']} | {r['priority_score']:.2f} | {r['status']} | "
                 f"{r['severity']} | {r['count_24h']} | {fp} |"
