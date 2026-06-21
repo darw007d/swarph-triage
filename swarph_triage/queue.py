@@ -195,21 +195,152 @@ class TriageQueue:
         to_status: Status | str,
         actor: str,
         note: str = "",
+        now: datetime | None = None,
     ) -> bool:
-        """Stub — move row to ``to_status`` if allowed by state machine.
+        """Move row to ``to_status`` if allowed by the state machine.
 
         Logs to ``state_log``, updates ``triaged_at`` / ``approved_at`` /
-        ``patched_at`` timestamps. Returns False if transition is disallowed.
+        ``patched_at`` timestamps. Returns False (writing nothing) if the
+        transition is disallowed or the row is missing.
         """
-        raise NotImplementedError("queue.transition — implementation in flight")
+        from sqlalchemy import select, insert, update
 
-    def reopen(self, fingerprint_id: int, *, actor: str, note: str = "") -> bool:
-        """Stub — terminal state → NEW (resurrect path for human review).
+        from swarph_triage.schema import fingerprints, state_log
+
+        to_value = to_status.value if isinstance(to_status, Status) else str(to_status)
+        when = _coerce_now(now)
+
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                select(fingerprints.c.status).where(
+                    fingerprints.c.id == fingerprint_id
+                )
+            ).mappings().one_or_none()
+            if row is None:
+                return False
+            from_value = row["status"]
+            try:
+                from_status = Status(from_value)
+                to_enum = Status(to_value)
+            except ValueError:
+                return False
+            if not can_transition(from_status, to_enum):
+                return False
+
+            values: dict[str, Any] = {"status": to_value}
+            if to_enum is Status.TRIAGED:
+                values["triaged_at"] = when
+            elif to_enum is Status.APPROVED:
+                values["approved_at"] = when
+            elif to_enum is Status.PATCHED:
+                values["patched_at"] = when
+
+            conn.execute(
+                update(fingerprints)
+                .where(fingerprints.c.id == fingerprint_id)
+                .values(**values)
+            )
+            conn.execute(insert(state_log).values(
+                fingerprint_id=fingerprint_id,
+                from_status=from_value,
+                to_status=to_value,
+                actor=actor,
+                note=note,
+                transitioned_at=when,
+            ))
+        return True
+
+    def let_cool(
+        self,
+        fingerprint_id: int,
+        *,
+        actor: str,
+        note: str = "",
+        now: datetime | None = None,
+    ) -> bool:
+        """Defer a row: set ``cooldown_until = now + cooldown_default_days``.
+
+        The priority calc ramps the score back from zero as cooldown expires,
+        so a deliberately-deferred item doesn't immediately re-surface. Returns
+        False if the row is missing.
+        """
+        from sqlalchemy import select, insert, update
+
+        from swarph_triage.schema import fingerprints, state_log
+
+        when = _coerce_now(now)
+        cooldown_until = when + timedelta(days=float(self.config["cooldown_default_days"]))
+
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                select(fingerprints.c.status).where(
+                    fingerprints.c.id == fingerprint_id
+                )
+            ).mappings().one_or_none()
+            if row is None:
+                return False
+            conn.execute(
+                update(fingerprints)
+                .where(fingerprints.c.id == fingerprint_id)
+                .values(cooldown_until=cooldown_until)
+            )
+            conn.execute(insert(state_log).values(
+                fingerprint_id=fingerprint_id,
+                from_status=row["status"],
+                to_status=row["status"],
+                actor=actor,
+                note=note or "let_cool",
+                transitioned_at=when,
+            ))
+        return True
+
+    def reopen(
+        self,
+        fingerprint_id: int,
+        *,
+        actor: str,
+        note: str = "",
+        now: datetime | None = None,
+    ) -> bool:
+        """Terminal state → NEW (human-initiated re-open).
 
         Distinct from ``regression.resurrect`` (which sets regression=1
-        automatically); ``reopen`` is human-initiated and does not flag.
+        automatically); ``reopen`` does not flag. Returns False if the row is
+        missing or not in a terminal state.
         """
-        raise NotImplementedError("queue.reopen — implementation in flight")
+        from sqlalchemy import select, insert, update
+
+        from swarph_triage.schema import fingerprints, state_log
+
+        when = _coerce_now(now)
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                select(fingerprints.c.status).where(
+                    fingerprints.c.id == fingerprint_id
+                )
+            ).mappings().one_or_none()
+            if row is None:
+                return False
+            try:
+                from_status = Status(row["status"])
+            except ValueError:
+                return False
+            if from_status not in TERMINAL:
+                return False
+            conn.execute(
+                update(fingerprints)
+                .where(fingerprints.c.id == fingerprint_id)
+                .values(status="new")
+            )
+            conn.execute(insert(state_log).values(
+                fingerprint_id=fingerprint_id,
+                from_status=row["status"],
+                to_status="new",
+                actor=actor,
+                note=note or "reopen",
+                transitioned_at=when,
+            ))
+        return True
 
     # ─── reads ─────────────────────────────────────────────────────────────
     def list(
