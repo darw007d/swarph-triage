@@ -1,7 +1,9 @@
 """SQLAlchemy Core schema — 3 tables, 6 indexes, dialect-portable.
 
-ON CONFLICT semantics work on sqlite >=3.24 and Postgres natively, so the
-UPSERT helper in queue.py is single-implementation for both.
+queue.ingest upserts via SELECT-then-INSERT/UPDATE (read-modify-write), which is
+correct for the single-writer (cron) model these queues target. It is NOT atomic:
+two concurrent ingests of the *same new* fingerprint could collide on the unique
+constraint. A future revision can switch to a dialect ON CONFLICT for multi-writer.
 """
 
 from __future__ import annotations
