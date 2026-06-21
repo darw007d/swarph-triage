@@ -6,12 +6,26 @@ Implementation lands in follow-up commits per the README "Status" line.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Optional
 
 from sqlalchemy.engine import Engine
 
 from swarph_triage.config import load_config
-from swarph_triage.state_machine import Status
+from swarph_triage.state_machine import (
+    Status,
+    TERMINAL,
+    VALID_TRANSITIONS,
+    can_transition,
+)
+
+
+def _coerce_now(now: datetime | None) -> datetime:
+    if now is None:
+        return datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=timezone.utc)
+    return now
 
 
 ProposerFn = Callable[[dict, list[dict]], dict | None]
@@ -49,7 +63,7 @@ class TriageQueue:
         context: Mapping[str, Any] | None = None,
         occurred_at=None,  # datetime | None — defaults to now()
     ) -> int:
-        """Stub — UPSERT a fingerprint, append an occurrence, return fp_id.
+        """UPSERT a fingerprint, append an occurrence, return fp_id.
 
         Side effects:
         - If fingerprint exists in ``patched`` and ``occurred_at`` is within
@@ -57,7 +71,121 @@ class TriageQueue:
         - If fingerprint is ``new`` and a proposer_fn is registered, fire it
           and store ``proposed_fix``, transition to ``triaged``.
         """
-        raise NotImplementedError("queue.ingest — implementation in flight")
+        from sqlalchemy import select, insert, update
+
+        from swarph_triage import regression
+        from swarph_triage.priority import compute
+        from swarph_triage.schema import fingerprints, occurrences, state_log
+
+        occ_dt = _coerce_now(occurred_at)
+        ctx = dict(context) if context else None
+
+        with self.engine.begin() as conn:
+            existing = conn.execute(
+                select(fingerprints).where(
+                    fingerprints.c.fingerprint == fingerprint
+                )
+            ).mappings().one_or_none()
+
+            if existing is None:
+                res = conn.execute(insert(fingerprints).values(
+                    fingerprint=fingerprint,
+                    severity=severity,
+                    category=category,
+                    status="new",
+                    count_total=1,
+                    count_24h=1,
+                    first_seen=occ_dt,
+                    last_seen=occ_dt,
+                    actionability=actionability,
+                    priority_score=0.0,
+                    regression=0,
+                    context=ctx,
+                ))
+                fp_id = res.inserted_primary_key[0]
+                conn.execute(insert(state_log).values(
+                    fingerprint_id=fp_id,
+                    from_status=None,
+                    to_status="new",
+                    actor="ingest",
+                    note="",
+                    transitioned_at=occ_dt,
+                ))
+            else:
+                fp_id = existing["id"]
+                values: dict[str, Any] = {
+                    "count_total": (existing["count_total"] or 0) + 1,
+                    "last_seen": occ_dt,
+                }
+                # Regression: a patched fingerprint reappearing within grace.
+                if regression.is_regression(
+                    dict(existing), occurred_at=occ_dt, config=self.config
+                ):
+                    values["status"] = "new"
+                    values["regression"] = 1
+                    conn.execute(insert(state_log).values(
+                        fingerprint_id=fp_id,
+                        from_status=existing["status"],
+                        to_status="new",
+                        actor="ingest",
+                        note="regression detected",
+                        transitioned_at=occ_dt,
+                    ))
+                conn.execute(
+                    update(fingerprints)
+                    .where(fingerprints.c.id == fp_id)
+                    .values(**values)
+                )
+
+            # Append the occurrence.
+            conn.execute(insert(occurrences).values(
+                fingerprint_id=fp_id,
+                occurred_at=occ_dt,
+                payload=ctx,
+            ))
+
+            # Recompute count_24h relative to this occurrence.
+            window_start = occ_dt - timedelta(hours=24)
+            from sqlalchemy import func
+            count_24h = conn.execute(
+                select(func.count()).select_from(occurrences).where(
+                    occurrences.c.fingerprint_id == fp_id,
+                    occurrences.c.occurred_at > window_start,
+                )
+            ).scalar() or 0
+            conn.execute(
+                update(fingerprints)
+                .where(fingerprints.c.id == fp_id)
+                .values(count_24h=count_24h)
+            )
+
+            # Recompute priority for this row, "now" = the latest occurrence.
+            row = conn.execute(
+                select(fingerprints).where(fingerprints.c.id == fp_id)
+            ).mappings().one()
+            score = compute(dict(row), now_ts=occ_dt.timestamp(), config=self.config)
+            conn.execute(
+                update(fingerprints)
+                .where(fingerprints.c.id == fp_id)
+                .values(priority_score=score)
+            )
+
+        # Optional proposer hook for fresh rows.
+        if self.proposer_fn is not None and existing is None:
+            try:
+                proposal = self.proposer_fn(dict(row), [])
+            except Exception:
+                proposal = None
+            if proposal and proposal.get("proposed_fix"):
+                from sqlalchemy import update as _update
+                with self.engine.begin() as conn:
+                    conn.execute(
+                        _update(fingerprints)
+                        .where(fingerprints.c.id == fp_id)
+                        .values(proposed_fix=proposal["proposed_fix"])
+                    )
+
+        return fp_id
 
     # ─── transitions ───────────────────────────────────────────────────────
     def transition(
