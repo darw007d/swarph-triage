@@ -79,6 +79,7 @@ class TriageQueue:
 
         occ_dt = _coerce_now(occurred_at)
         ctx = dict(context) if context else None
+        regressed = False  # set inside the txn; notify fired post-commit
 
         with self.engine.begin() as conn:
             existing = conn.execute(
@@ -123,6 +124,7 @@ class TriageQueue:
                 ):
                     values["status"] = "new"
                     values["regression"] = 1
+                    regressed = True
                     conn.execute(insert(state_log).values(
                         fingerprint_id=fp_id,
                         from_status=existing["status"],
@@ -169,6 +171,15 @@ class TriageQueue:
                 .where(fingerprints.c.id == fp_id)
                 .values(priority_score=score)
             )
+
+        # Regression notify hook on the prod ingest path (durable-then-notify,
+        # mirrors regression.resurrect). The inline resurrect above skipped this,
+        # so a regression found via ingest silently missed notification (PR #1 nit).
+        if regressed and self.notify_fn is not None:
+            try:
+                self.notify_fn("regression", {"fingerprint_id": fp_id, "note": "regression detected"})
+            except Exception:
+                pass
 
         # Optional proposer hook for fresh rows.
         if self.proposer_fn is not None and existing is None:

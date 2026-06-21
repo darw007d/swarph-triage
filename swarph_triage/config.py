@@ -40,8 +40,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "regression_grace_hours": 24,
 
     # ─── cooldown semantics ───
-    # When a row transitions to `let_cool`, cooldown_until = now + N days.
-    # Priority is zero during cooldown, ramps back linearly after.
+    # When a row is sent to `let_cool`, cooldown_until = now + N days.
+    # Priority ramps DURING the cooldown window — 0 at cooldown-start, linearly
+    # back to full at expiry (not "after"); see priority.compute's cooldown ramp.
     "cooldown_default_days": 14,
 
     # ─── normalization ───

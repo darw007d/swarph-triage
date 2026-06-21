@@ -39,9 +39,15 @@ def build_router(queue) -> Any:
 
     @router.post("/transition/{fp_id}")
     def transition(fp_id: int, body: dict = Body(...)):
+        from fastapi import HTTPException
+        # Auth is the consumer's responsibility (mount this router behind your
+        # own auth middleware). Validate the required field → 422, not a 500.
+        to_status = body.get("to_status")
+        if not to_status:
+            raise HTTPException(status_code=422, detail="to_status is required")
         ok = queue.transition(
             fp_id,
-            to_status=body["to_status"],
+            to_status=to_status,
             actor=body.get("actor", "api"),
             note=body.get("note", ""),
         )

@@ -121,6 +121,33 @@ def test_ingest_resurrects_patched_within_grace(tmp_path):
                and l["actor"] == "ingest" for l in logs)
 
 
+def test_ingest_regression_fires_notify_hook(tmp_path):
+    # The prod regression path is ingest (not resurrect()), so notify_fn MUST
+    # fire there — a regression that silently skips the hook is the bug. (PR #1 nit)
+    import swarph_triage
+    events = []
+    q = swarph_triage.open(f"sqlite:///{tmp_path/'n.db'}",
+                           notify_fn=lambda kind, payload: events.append((kind, payload)))
+    t0 = _now()
+    fp_id = q.ingest(fingerprint="N|fire|1", occurred_at=t0)
+    _force_patched(q, fp_id, t0)
+    assert events == []  # nothing fired yet
+    # reappears within grace via ingest -> regression -> notify
+    q.ingest(fingerprint="N|fire|1", occurred_at=t0 + timedelta(hours=2))
+    assert ("regression", {"fingerprint_id": fp_id, "note": "regression detected"}) in events
+
+
+def test_ingest_no_notify_when_not_regression(tmp_path):
+    import swarph_triage
+    events = []
+    q = swarph_triage.open(f"sqlite:///{tmp_path/'n2.db'}",
+                           notify_fn=lambda kind, payload: events.append((kind, payload)))
+    t0 = _now()
+    q.ingest(fingerprint="P|x|1", occurred_at=t0)
+    q.ingest(fingerprint="P|x|1", occurred_at=t0 + timedelta(hours=1))  # plain dup, not patched
+    assert events == []
+
+
 def test_ingest_does_not_resurrect_after_grace(tmp_path):
     q = _open(tmp_path)
     t0 = _now()
